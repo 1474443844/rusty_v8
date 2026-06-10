@@ -1,0 +1,71 @@
+name: Build rusty_v8 for Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_arch:
+        description: 'Target architecture'
+        required: true
+        default: 'aarch64-linux-android'
+        type: choice
+        options:
+          - aarch64-linux-android
+          - armv7-linux-androideabi
+          - i686-linux-android
+          - x86_64-linux-android
+      build_type:
+        description: 'Build type'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl python3 git make clang
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install Android NDK
+        run: |
+          wget https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          unzip -q android-ndk-r27c-linux.zip
+          echo "ANDROID_NDK=$PWD/android-ndk-r27c" >> $GITHUB_ENV
+
+      - name: Add Rust target
+        run: rustup target add ${{ github.event.inputs.target_arch }}
+
+      - name: Set bindgen clang args
+        run: |
+          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
+
+      - name: Build rusty_v8 from source
+        env:
+          V8_FROM_SOURCE: 1
+        run: |
+          if [ "${{ github.event.inputs.build_type }}" = "release" ]; then
+            cargo build -vv --target ${{ github.event.inputs.target_arch }} --release
+          else
+            cargo build -vv --target ${{ github.event.inputs.target_arch }}
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rusty_v8_${{ github.event.inputs.target_arch }}_${{ github.event.inputs.build_type }}
+          path: |
+            target/${{ github.event.inputs.target_arch }}/${{ github.event.inputs.build_type == 'release' && 'release' || 'debug' }}/*.a
+            target/${{ github.event.inputs.target_arch }}/${{ github.event.inputs.build_type == 'release' && 'release' || 'debug' }}/*.so
