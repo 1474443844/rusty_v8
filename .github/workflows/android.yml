@@ -21,11 +21,18 @@ on:
         options:
           - release
           - debug
+name: Build rusty_v8 for Android
+
+on:
+  workflow_dispatch: 
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 env:
   CARGO_TERM_COLOR: always
   V8_FROM_SOURCE: 1
-  ANDROID_API_LEVEL: 24
   TARGET_ARCH: aarch64-linux-android
 
 jobs:
@@ -52,41 +59,28 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          # 添加了 clang, lld, ninja-build, gn 等必须的基础工具链
-          # clang/lld 用于编译 V8 的 Host tools (如 mksnapshot)
-          sudo apt-get install -y python3 curl git build-essential pkg-config glib-2.0 clang lld ninja-build gn
+          # 【重要修正】移除了 clang, lld, gn, ninja-build。让 rusty_v8 自动下载配套版本！
+          sudo apt-get install -y python3 curl git build-essential pkg-config glib-2.0
 
-      - name: Configure Android NDK Environment
+      - name: Configure Android Environment for Cargo
         run: |
-          # 获取系统预装的 NDK 路径
-          NDK_HOME=$ANDROID_NDK_LATEST_HOME
+          # 设置 Android NDK 环境变量供 rusty_v8 的 build.rs 读取
+          export ANDROID_NDK_HOME=$ANDROID_NDK_LATEST_HOME
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> $GITHUB_ENV
+          
+          # 给 Rust/Cargo 配置 NDK Linker (Rust 编译产物时仍然需要)
           HOST_TAG=linux-x86_64
-          TOOLCHAIN=$NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG
+          API=24
+          TOOLCHAIN=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG
+          CC_PATH="$TOOLCHAIN/bin/${{ env.TARGET_ARCH }}${API}-clang"
           
-          # 拼接 NDK 交叉编译器路径 (Target 编译器)
-          CC_PATH="$TOOLCHAIN/bin/${{ env.TARGET_ARCH }}${{ env.ANDROID_API_LEVEL }}-clang"
-          CXX_PATH="$TOOLCHAIN/bin/${{ env.TARGET_ARCH }}${{ env.ANDROID_API_LEVEL }}-clang++"
-          
-          if [ ! -f "$CC_PATH" ]; then
-            echo "Error: NDK Compiler not found at $CC_PATH"
-            exit 1
-          fi
-
-          # 配置给 target 的 C/C++ 编译器（编译 Android 代码）
-          echo "CC=$CC_PATH" >> $GITHUB_ENV
-          echo "CXX=$CXX_PATH" >> $GITHUB_ENV
-          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
-          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
-          
-          # 配置给 host 的 C/C++ 编译器（编译 mksnapshot 等工具，使用刚才 apt 安装的 clang）
-          echo "HOST_CC=clang" >> $GITHUB_ENV
-          echo "HOST_CXX=clang++" >> $GITHUB_ENV
-          
-          # 告诉 Cargo 如何 Link
+          # 告诉 Cargo 如何连接 Android 目标
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC_PATH" >> $GITHUB_ENV
 
       - name: Build rusty_v8
         run: |
+          # 运行编译
+          # rusty_v8 会自动下载正确的 gn, ninja 和 Chromium clang，并使用它们进行编译
           cargo build --target ${{ env.TARGET_ARCH }} --release
 
       - name: Upload Build Artifacts
