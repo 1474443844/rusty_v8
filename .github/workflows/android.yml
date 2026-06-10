@@ -22,50 +22,76 @@ on:
           - release
           - debug
 
+env:
+  CARGO_TERM_COLOR: always
+  V8_FROM_SOURCE: 1
+  ANDROID_API_LEVEL: 24
+  TARGET_ARCH: aarch64-linux-android
+
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
 
-      - name: Install system dependencies
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ env.TARGET_ARCH }}
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.TARGET_ARCH }}
+
+      - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y curl python3 git make clang
+          # 添加了 clang, lld, ninja-build, gn 等必须的基础工具链
+          # clang/lld 用于编译 V8 的 Host tools (如 mksnapshot)
+          sudo apt-get install -y python3 curl git build-essential pkg-config glib-2.0 clang lld ninja-build gn
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rust-src
-
-      - name: Install Android NDK
+      - name: Configure Android NDK Environment
         run: |
-          wget https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
-          unzip -q android-ndk-r27c-linux.zip
-          echo "ANDROID_NDK=$PWD/android-ndk-r27c" >> $GITHUB_ENV
-
-      - name: Add Rust target
-        run: rustup target add ${{ github.event.inputs.target_arch }}
-
-      - name: Set bindgen clang args
-        run: |
-          echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" >> $GITHUB_ENV
-
-      - name: Build rusty_v8 from source
-        env:
-          V8_FROM_SOURCE: 1
-        run: |
-          if [ "${{ github.event.inputs.build_type }}" = "release" ]; then
-            cargo build -vv --target ${{ github.event.inputs.target_arch }} --release
-          else
-            cargo build -vv --target ${{ github.event.inputs.target_arch }}
+          # 获取系统预装的 NDK 路径
+          NDK_HOME=$ANDROID_NDK_LATEST_HOME
+          HOST_TAG=linux-x86_64
+          TOOLCHAIN=$NDK_HOME/toolchains/llvm/prebuilt/$HOST_TAG
+          
+          # 拼接 NDK 交叉编译器路径 (Target 编译器)
+          CC_PATH="$TOOLCHAIN/bin/${{ env.TARGET_ARCH }}${{ env.ANDROID_API_LEVEL }}-clang"
+          CXX_PATH="$TOOLCHAIN/bin/${{ env.TARGET_ARCH }}${{ env.ANDROID_API_LEVEL }}-clang++"
+          
+          if [ ! -f "$CC_PATH" ]; then
+            echo "Error: NDK Compiler not found at $CC_PATH"
+            exit 1
           fi
 
-      - name: Upload artifacts
+          # 配置给 target 的 C/C++ 编译器（编译 Android 代码）
+          echo "CC=$CC_PATH" >> $GITHUB_ENV
+          echo "CXX=$CXX_PATH" >> $GITHUB_ENV
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          
+          # 配置给 host 的 C/C++ 编译器（编译 mksnapshot 等工具，使用刚才 apt 安装的 clang）
+          echo "HOST_CC=clang" >> $GITHUB_ENV
+          echo "HOST_CXX=clang++" >> $GITHUB_ENV
+          
+          # 告诉 Cargo 如何 Link
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$CC_PATH" >> $GITHUB_ENV
+
+      - name: Build rusty_v8
+        run: |
+          cargo build --target ${{ env.TARGET_ARCH }} --release
+
+      - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rusty_v8_${{ github.event.inputs.target_arch }}_${{ github.event.inputs.build_type }}
-          path: |
-            target/${{ github.event.inputs.target_arch }}/${{ github.event.inputs.build_type == 'release' && 'release' || 'debug' }}/*.a
-            target/${{ github.event.inputs.target_arch }}/${{ github.event.inputs.build_type == 'release' && 'release' || 'debug' }}/*.so
+          name: rusty_v8-android-aarch64
+          path: target/${{ env.TARGET_ARCH }}/release/librusty_v8.rlib
+          retention-days: 7
